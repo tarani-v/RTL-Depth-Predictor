@@ -1,0 +1,147 @@
+# Install necessary libraries
+pip install pandas pyarrow scikit-learn
+
+import pandas as pd
+import re
+import os
+from collections import defaultdict
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+# Load dataset
+df = pd.read_parquet("hf://datasets/ahmedallam/RTL-Repo/data/train-00000-of-00001.parquet")
+
+# Function to extract Verilog features
+def extract_verilog_features(code):
+    features = {
+        "num_AND": len(re.findall(r"\band\b", code, re.IGNORECASE)),
+        "num_OR": len(re.findall(r"\bor\b", code, re.IGNORECASE)),
+        "num_XOR": len(re.findall(r"\bxor\b", code, re.IGNORECASE)),
+        "num_NOT": len(re.findall(r"\bnot\b", code, re.IGNORECASE)),
+        "num_DFF": len(re.findall(r"\bdff\b", code, re.IGNORECASE)),
+        "num_always": len(re.findall(r"\balways\b", code, re.IGNORECASE)),
+        "num_wire": len(re.findall(r"\bwire\b", code, re.IGNORECASE)),
+        "num_reg": len(re.findall(r"\breg\b", code, re.IGNORECASE)),
+        "num_assign": len(re.findall(r"\bassign\b", code, re.IGNORECASE)),
+        "num_delay": len(re.findall(r"#\d+", code))  # Captures delays like #5, #10
+    }
+    return features
+
+# Apply feature extraction to dataset
+feature_df = df["all_code"].apply(extract_verilog_features).apply(pd.Series)
+df = pd.concat([df, feature_df], axis=1)
+
+# Function to analyze Fan-in, Fan-out, and Logic Depth
+def analyze_verilog(verilog_code):
+    signal_usage = defaultdict(lambda: {"inputs": 0, "outputs": 0})
+    logic_depth = 0
+    num_conditions = 0
+    num_loops = 0
+    num_instantiations = 0
+
+    # Extract wire and reg signals
+    signals = re.findall(r'\b(?:wire|reg)\s+([\w\[\], ]+);', verilog_code)
+    for signal_group in signals:
+        for signal in re.findall(r'\b\w+\b', signal_group):
+            signal_usage[signal]  # Initialize
+
+    # Extract assignments for Fan-in & Fan-out
+    assignments = re.findall(r'(\w+)\s*=\s*(.+);', verilog_code)
+    for output_signal, input_signals in assignments:
+        signal_usage[output_signal]["outputs"] += 1
+        for input_signal in re.findall(r'\b\w+\b', input_signals):
+            if input_signal in signal_usage:
+                signal_usage[input_signal]["inputs"] += 1
+
+    # Estimate logic depth (counting chained assignments)
+    logic_depth = len(re.findall(r'=', verilog_code))
+
+    # Count conditional statements
+    num_conditions = len(re.findall(r'\b(if|else|case)\b', verilog_code))
+
+    # Count loops
+    num_loops = len(re.findall(r'\b(for|while|repeat)\b', verilog_code))
+
+    # Count module instantiations (hierarchical complexity)
+    num_instantiations = len(re.findall(r'\b\w+\s+\w+\s*\(.*?\);', verilog_code))
+
+    # Compute average Fan-in and Fan-out
+    total_fan_in = sum(s["inputs"] for s in signal_usage.values())
+    total_fan_out = sum(s["outputs"] for s in signal_usage.values())
+    num_signals = len(signal_usage)
+
+    avg_fan_in = total_fan_in / num_signals if num_signals else 0
+    avg_fan_out = total_fan_out / num_signals if num_signals else 0
+
+    return avg_fan_in, avg_fan_out, logic_depth, num_conditions, num_loops, num_instantiations
+
+# Apply analysis to dataset
+df[['avg_fan_in', 'avg_fan_out', 'logic_depth', 'num_conditions', 'num_loops', 'num_instantiations']] = df['all_code'].apply(
+    lambda code: pd.Series(analyze_verilog(code))
+)
+
+# Drop unnecessary columns
+df = df.drop(columns=["all_code"])  
+
+# Save processed dataset
+df.to_csv("rtl_dataset_with_features.csv", index=False)
+print("Dataset saved as rtl_dataset_with_features.csv ✅")
+
+# Load dataset for ML
+df = pd.read_csv("rtl_dataset_with_features.csv")
+
+# Define features and target variable
+X = df.drop(columns=["logic_depth"])  # Features
+y = df["logic_depth"]  # Target variable
+
+# Train-test split (80-20)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train a Linear Regression Model
+model = LinearRegression()
+model.fit(X_train, y_train)
+
+# Predict on test set
+y_pred = model.predict(X_test)
+
+# Evaluate Model Performance
+mae = mean_absolute_error(y_test, y_pred)
+mse = mean_squared_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print(f"Model Performance:")
+print(f"🔹 Mean Absolute Error (MAE): {mae:.4f}")
+print(f"🔹 Mean Squared Error (MSE): {mse:.4f}")
+print(f"🔹 R² Score: {r2:.4f}")
+
+# Save trained model
+import joblib
+joblib.dump(model, "linear_regression_rtl_model.pkl")
+print("Trained model saved as linear_regression_rtl_model.pkl ✅")
+
+# Predict Logic Depth for new Verilog Code
+def predict_logic_depth(verilog_code):
+    features = extract_verilog_features(verilog_code)
+    fan_in, fan_out, logic_depth, conditions, loops, instantiations = analyze_verilog(verilog_code)
+    features.update({"avg_fan_in": fan_in, "avg_fan_out": fan_out, "num_conditions": conditions, "num_loops": loops, "num_instantiations": instantiations})
+
+    feature_df = pd.DataFrame([features])  # Convert to DataFrame
+    prediction = model.predict(feature_df)[0]
+    
+    return prediction
+
+# Example Test Case
+test_verilog = """
+module example(input clk, input rst, input a, output reg y);
+  always @(posedge clk or posedge rst) begin
+    if (rst)
+      y <= 0;
+    else
+      y <= a;
+  end
+endmodule
+"""
+
+predicted_depth = predict_logic_depth(test_verilog)
+print(f"Predicted Combinational Depth: {predicted_depth:.4f} 🔥")
