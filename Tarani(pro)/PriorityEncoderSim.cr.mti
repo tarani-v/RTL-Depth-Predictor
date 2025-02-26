@@ -1,0 +1,8 @@
+C:/Users/aammu/OneDrive/Desktop/Tarani(pro)/PR_ENC.v {1 {vlog -work work -stats=none C:/Users/aammu/OneDrive/Desktop/Tarani(pro)/PR_ENC.v
+Model Technology ModelSim - Intel FPGA Edition vlog 10.5b Compiler 2016.10 Oct  5 2016
+-- Compiling module PR_ENC
+
+Top level modules:
+	PR_ENC
+
+} {} {}}
