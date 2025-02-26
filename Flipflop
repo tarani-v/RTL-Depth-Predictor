@@ -1,0 +1,10 @@
+module FlipFlopWithLogic (
+    input clk,
+    input d,  // Input to the Flip-Flop
+    output reg q  // Output from the Flip-Flop
+);
+    always @(posedge clk) begin
+        q <= d;
+    end
+endmodule
+ 
